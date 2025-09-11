@@ -1,0 +1,79 @@
+#Install Prometheus = Grafana
+#Install Prometheus
+sudo useradd --no-create-home --shell /bin/false prometheus
+cd /opt/
+wget https://github.com/prometheus/prometheus/release/download/v2.52.0/prometheus-2.52.0.linux-amd64.tar.gz
+tar xvf prometheus-*.tar.gz
+mv prometheus-2.52.0.linux-amd64 prometheus
+cd prometheus
+
+# Configure Prometheus
+sudo nano prometheus.yml
+Scrape_configs:
+	- job_name: "postgres_exporter"
+	static_config:
+		- target: [<postgresql server>:9187]
+
+# Create Prometheus systemd service
+sudo nano /etc/systemd/system/prometheus.service
+[Unit]
+	Description=Prometheus
+	Wants=network-online.target
+	After=network-online.target
+	
+[Service]
+	user=prometheus
+	Group=prometheus
+	Type=simple
+	ExecStart=/opt/prometheus/prometheus \
+		--config.file=/opt/prometheus/prometheus.yml \
+		--storage.tsdb.path=/opt/prometheus/data
+[Install]
+	WantedBy=multi-user.target
+
+# Start and Enable Prometheus
+sudo chown -R prometheus:prometheus /opt/prometheus
+sudo systemctl daemon-reexec
+sudo systemctl daemon-reload
+sudo systemctl start prometheus
+sudo systemctl enable prometheus
+sudo systemctl status prometheus
+
+#open FW port 9090 (ufw allow 9090/tcp)
+
+=====================================================================
+
+# Install Grafana
+sudo apt install -y software-properties-common
+sudo add-apt-repository "deb https://packages.grafana.com/oss/deb stable | main"
+wget -q -O - https://packages.grafana.com/gpg.key | sudo apt-key add -
+
+sudo apt update
+sudo apt install grafana -yml
+sudo systemctl start grafana-server
+sudo systemctl enable grafana-server
+
+#open FW port 3000 (ufw allow 3000/tcp)
+
+login : admin / admin
+change the password
+
+# add Prometheus Data Source in Grafana
+Login UI
+go to 
+connection => Data Source => add data source => select prometheus
+	name : prometheus
+	server url : <localhost/ip>:9090
+	save and exit
+	
+# Import PostgreSQL Monitoring Dashboard
+9628     #PostgreSQL Overview
+455      #PostgreSQL Database Metrics
+
+in Grafana, go to "+" => import dasboard
+		url or ID 9628
+		load
+		,Prometheus : select Prometheus
+		import
+
+# Testing Process
