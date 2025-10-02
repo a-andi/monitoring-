@@ -28,6 +28,7 @@ sudo nano /etc/systemd/system/prometheus.service
 	ExecStart=/opt/prometheus/prometheus \
 		--config.file=/opt/prometheus/prometheus.yml \
 		--storage.tsdb.path=/opt/prometheus/data
+		--web.listen-address=:9090
 [Install]
 	WantedBy=multi-user.target
 
