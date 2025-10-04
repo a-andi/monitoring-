@@ -13,6 +13,9 @@ Scrape_configs:
 	- job_name: "postgres_exporter"
 	static_config:
 		- target: [<postgresql server>:9187]
+	- job_name: "Router"
+	static_config:
+		- target: [<IP Router1>:161, <IP Router2>:161,]
 
 # Create Prometheus systemd service
 sudo nano /etc/systemd/system/prometheus.service
