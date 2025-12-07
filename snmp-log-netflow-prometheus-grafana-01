@@ -1,0 +1,821 @@
+Instalasi Lengkap Monitoring Stack di Ubuntu 24.04 LTS
+Struktur akhir di /opt/:
+text
+/opt/
+├── prometheus/
+│   ├── bin/
+│   │   ├── prometheus
+│   │   └── promtool
+│   ├── conf/
+│   │   └── prometheus.yml
+│   ├── data/
+│   └── logs/
+├── snmp_exporter/
+│   ├── bin/
+│   │   └── snmp_exporter
+│   └── conf/
+│       └── snmp.yml
+├── node_exporter/
+│   └── node_exporter
+├── grafana/
+│   ├── bin/
+│   │   └── grafana-server
+│   ├── conf/
+│   │   └── grafana.ini
+│   ├── data/
+│   └── logs/
+├── loki/
+│   ├── bin/
+│   │   └── loki
+│   ├── conf/
+│   │   └── loki.yml
+│   └── logs/
+├── promtail/
+│   ├── bin/
+│   │   └── promtail
+│   ├── conf/
+│   │   └── promtail.yml
+│   └── logs/
+└── flow-exporter/
+    ├── bin/
+    │   └── flow-exporter
+    ├── conf/
+    │   └── flow.yml
+    └── logs/
+LANGKAH 1: Persiapan Sistem
+bash
+# Update sistem
+sudo apt update && sudo apt upgrade -y
+
+# Install dependencies
+sudo apt install -y wget curl tar gnupg software-properties-common \
+    net-tools snmp snmp-mibs-downloader
+
+# Tambah repository Grafana
+sudo apt-get install -y apt-transport-https
+sudo mkdir -p /etc/apt/keyrings/
+curl -fsSL https://apt.grafana.com/gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/grafana.gpg
+echo "deb [signed-by=/etc/apt/keyrings/grafana.gpg] https://apt.grafana.com stable main" | sudo tee /etc/apt/sources.list.d/grafana.list
+
+# Update repositori
+sudo apt update
+LANGKAH 2: Instalasi Prometheus (v2.53.3 - Latest)
+bash
+# Buat struktur folder
+sudo mkdir -p /opt/prometheus/{bin,conf,data,logs}
+
+# Download Prometheus
+cd /tmp
+wget https://github.com/prometheus/prometheus/releases/download/v2.53.3/prometheus-2.53.3.linux-amd64.tar.gz
+tar -xzf prometheus-2.53.3.linux-amd64.tar.gz
+cd prometheus-2.53.3.linux-amd64/
+
+# Copy binary
+sudo cp prometheus promtool /opt/prometheus/bin/
+
+# Buat konfigurasi prometheus.yml
+sudo tee /opt/prometheus/conf/prometheus.yml > /dev/null << 'EOF'
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+rule_files: []
+
+scrape_configs:
+  # Prometheus sendiri
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Node Exporter
+  - job_name: "node_exporter"
+    static_configs:
+      - targets: ["localhost:9100"]
+
+  # SNMP Exporter
+  - job_name: "snmp_exporter"
+    static_configs:
+      - targets: ["localhost:9116"]
+    metrics_path: /snmp
+    params:
+      module: [if_mib]
+
+  # Loki (Log Exporter)
+  - job_name: "loki"
+    static_configs:
+      - targets: ["localhost:3100"]
+
+  # Flow Exporter (Netflow/sFlow)
+  - job_name: "flow_exporter"
+    static_configs:
+      - targets: ["localhost:9593"]
+EOF
+
+# Buat user dan service
+sudo useradd --system --no-create-home --shell /bin/false prometheus
+sudo chown -R prometheus:prometheus /opt/prometheus
+
+# Buat systemd service
+sudo tee /etc/systemd/system/prometheus.service > /dev/null << 'EOF'
+[Unit]
+Description=Prometheus
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=prometheus
+Group=prometheus
+Type=simple
+ExecStart=/opt/prometheus/bin/prometheus \
+    --config.file=/opt/prometheus/conf/prometheus.yml \
+    --storage.tsdb.path=/opt/prometheus/data \
+    --web.console.templates=/opt/prometheus/consoles \
+    --web.console.libraries=/opt/prometheus/console_libraries \
+    --web.listen-address=:9090 \
+    --storage.tsdb.retention.time=15d \
+    --log.level=info \
+    --log.format=json
+
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Start service
+sudo systemctl daemon-reload
+sudo systemctl enable prometheus
+sudo systemctl start prometheus
+sudo systemctl status prometheus
+LANGKAH 3: Instalasi Node Exporter (v1.8.2 - Latest)
+bash
+# Buat folder
+sudo mkdir -p /opt/node_exporter
+
+# Download Node Exporter
+cd /tmp
+wget https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-amd64.tar.gz
+tar -xzf node_exporter-1.8.2.linux-amd64.tar.gz
+cd node_exporter-1.8.2.linux-amd64/
+
+# Copy binary
+sudo cp node_exporter /opt/node_exporter/
+
+# Buat user dan permissions
+sudo useradd --system --no-create-home --shell /bin/false node_exporter
+sudo chown node_exporter:node_exporter /opt/node_exporter/node_exporter
+
+# Buat systemd service
+sudo tee /etc/systemd/system/node_exporter.service > /dev/null << 'EOF'
+[Unit]
+Description=Node Exporter
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=node_exporter
+Group=node_exporter
+Type=simple
+ExecStart=/opt/node_exporter/node_exporter \
+    --collector.systemd \
+    --collector.processes \
+    --collector.cpu \
+    --collector.meminfo \
+    --collector.diskstats \
+    --collector.netdev \
+    --collector.filesystem \
+    --web.listen-address=:9100
+
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Start service
+sudo systemctl daemon-reload
+sudo systemctl enable node_exporter
+sudo systemctl start node_exporter
+sudo systemctl status node_exporter
+LANGKAH 4: Instalasi SNMP Exporter (v0.28.0 - Latest)
+bash
+# Buat struktur folder
+sudo mkdir -p /opt/snmp_exporter/{bin,conf,logs}
+
+# Download SNMP Exporter
+cd /tmp
+wget https://github.com/prometheus/snmp_exporter/releases/download/v0.28.0/snmp_exporter-0.28.0.linux-amd64.tar.gz
+tar -xzf snmp_exporter-0.28.0.linux-amd64.tar.gz
+cd snmp_exporter-0.28.0.linux-amd64/
+
+# Copy binary
+sudo cp snmp_exporter /opt/snmp_exporter/bin/
+
+# Generate config default (kita gunakan yang sederhana)
+sudo tee /opt/snmp_exporter/conf/snmp.yml > /dev/null << 'EOF'
+modules:
+  if_mib:
+    walk:
+      - sysUpTime
+      - interfaces
+      - ifXTable
+    version: 2
+    auth:
+      community: public
+    max_repetitions: 25
+    retries: 3
+    timeout: 10s
+  
+  cisco:
+    walk:
+      - sysUpTime
+      - ifXTable
+      - ciscoMemoryPool
+      - ciscoProcessTable
+    version: 2
+    auth:
+      community: public
+EOF
+
+# Buat user dan permissions
+sudo useradd --system --no-create-home --shell /bin/false snmp_exporter
+sudo chown -R snmp_exporter:snmp_exporter /opt/snmp_exporter
+
+# Buat systemd service
+sudo tee /etc/systemd/system/snmp_exporter.service > /dev/null << 'dev/null' << 'EOF'
+[Unit]
+Description=SNMP Exporter
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=snmp_exporter
+Group=snmp_exporter
+Type=simple
+ExecStart=/opt/snmp_exporter/bin/snmp_exporter \
+    --config.file=/opt/snmp_exporter/conf/snmp.yml \
+    --web.listen-address=:9116 \
+    --log.level=info
+
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Start service
+sudo systemctl daemon-reload
+sudo systemctl enable snmp_exporter
+sudo systemctl start snmp_exporter
+sudo systemctl status snmp_exporter
+LANGKAH 5: Instalasi Grafana (v11.4.2 - Latest)
+bash
+# Install Grafana dari repo resmi
+sudo apt-get install -y grafana
+
+# Buat struktur folder custom
+sudo mkdir -p /opt/grafana/{bin,conf,data,logs}
+
+# Copy binary (backup dari instalasi apt)
+sudo cp /usr/sbin/grafana-server /opt/grafana/bin/
+
+# Buat config custom
+sudo tee /opt/grafana/conf/grafana.ini > /dev/null << 'EOF'
+[server]
+http_addr = 0.0.0.0
+http_port = 3000
+domain = localhost
+root_url = %(protocol)s://%(domain)s:%(http_port)s/
+
+[database]
+type = sqlite3
+path = /opt/grafana/data/grafana.db
+
+[session]
+provider = file
+provider_config = sessions
+
+[security]
+admin_user = eadmin
+admin_password = prometheus
+secret_key = SW2YcwTIb9zpOOhoPsMm
+
+[auth]
+disable_login_form = false
+
+[analytics]
+reporting_enabled = false
+check_for_updates = false
+
+[log]
+mode = file
+level = info
+
+[paths]
+data = /opt/grafana/data
+logs = /opt/grafana/logs
+plugins = /opt/grafana/plugins
+provisioning = /opt/grafana/conf/provisioning
+EOF
+
+# Buat folder provisioning
+sudo mkdir -p /opt/grafana/conf/provisioning/{datasources,dashboards}
+sudo mkdir -p /opt/grafana/dashboards
+
+# Buat provisioning datasource
+sudo tee /opt/grafana/conf/provisioning/datasources/prometheus.yml > /dev/null << 'EOF'
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://localhost:9090
+    isDefault: true
+    editable: true
+    
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://localhost:3100
+EOF
+
+# Buat provisioning dashboard
+sudo tee /opt/grafana/conf/provisioning/dashboards/dashboards.yml > /dev/null << 'EOF'
+apiVersion: 1
+
+providers:
+  - name: 'default'
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /opt/grafana/dashboards
+EOF
+
+# Ubah kepemilikan folder
+sudo chown -R grafana:grafana /opt/grafana
+
+# Buat systemd service custom
+sudo tee /etc/systemd/system/grafana-server.service > /dev/null << 'EOF'
+[Unit]
+Description=Grafana Server
+After=network.target prometheus.service
+
+[Service]
+User=grafana
+Group=grafana
+Type=simple
+ExecStart=/opt/grafana/bin/grafana-server \
+    --config=/opt/grafana/conf/grafana.ini \
+    --homepath=/usr/share/grafana \
+    cfg:default.paths.data=/opt/grafana/data \
+    cfg:default.paths.logs=/opt/grafana/logs \
+    cfg:default.paths.plugins=/opt/grafana/plugins
+
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Stop service default, start custom
+sudo systemctl stop grafana-server
+sudo systemctl disable grafana-server
+sudo systemctl daemon-reload
+sudo systemctl enable grafana-server
+sudo systemctl start grafana-server
+sudo systemctl status grafana-server
+LANGKAH 6: Instalasi Loki & Promtail (Log Monitoring)
+6.1 Install Loki (v3.2.1 - Latest)
+bash
+# Buat struktur folder
+sudo mkdir -p /opt/loki/{bin,conf,logs,data}
+
+# Download Loki
+cd /tmp
+wget https://github.com/grafana/loki/releases/download/v3.2.1/loki-linux-amd64.zip
+sudo apt install -y unzip
+unzip loki-linux-amd64.zip
+chmod +x loki-linux-amd64
+
+# Copy binary
+sudo cp loki-linux-amd64 /opt/loki/bin/loki
+
+# Buat konfigurasi Loki
+sudo tee /opt/loki/conf/loki.yml > /dev/null << 'EOF'
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /opt/loki/data
+  storage:
+    filesystem:
+      chunks_directory: /opt/loki/data/chunks
+      rules_directory: /opt/loki/data/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+query_range:
+  results_cache:
+    cache:
+      embedded_cache:
+        enabled: true
+        max_size_mb: 100
+
+schema_config:
+  configs:
+    - from: 2020-10-24
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+ruler:
+  alertmanager_url: http://localhost:9093
+
+limits_config:
+  reject_old_samples: true
+  reject_old_samples_max_age: 168h
+
+chunk_store_config:
+  max_look_back_period: 0s
+
+table_manager:
+  retention_deletes_enabled: false
+  retention_period: 0s
+
+compactor:
+  working_directory: /opt/loki/data/boltdb-shipper-compactor
+  shared_store: filesystem
+  compaction_interval: 10m
+  retention_enabled: true
+  retention_delete_delay: 2h
+  retention_delete_worker_count: 150
+EOF
+
+# Buat user dan permissions
+sudo useradd --system --no-create-home --shell /bin/false loki
+sudo chown -R loki:loki /opt/loki
+
+# Buat systemd service
+sudo tee /etc/systemd/system/loki.service > /dev/null << 'EOF'
+[Unit]
+Description=Loki Log Aggregator
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=loki
+Group=loki
+Type=simple
+ExecStart=/opt/loki/bin/loki \
+    -config.file=/opt/loki/conf/loki.yml \
+    -log.level=info
+
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Start service
+sudo systemctl daemon-reload
+sudo systemctl enable loki
+sudo systemctl start loki
+sudo systemctl status loki
+6.2 Install Promtail (v3.2.1 - Latest)
+bash
+# Buat struktur folder
+sudo mkdir -p /opt/promtail/{bin,conf,logs}
+
+# Download Promtail
+cd /tmp
+wget https://github.com/grafana/loki/releases/download/v3.2.1/promtail-linux-amd64.zip
+unzip promtail-linux-amd64.zip
+chmod +x promtail-linux-amd64
+
+# Copy binary
+sudo cp promtail-linux-amd64 /opt/promtail/bin/promtail
+
+# Buat konfigurasi Promtail
+sudo tee /opt/promtail/conf/promtail.yml > /dev/null << 'EOF'
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://localhost:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: system
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: varlogs
+          __path__: /var/log/*log
+
+  - job_name: syslog
+    syslog:
+      listen_address: 0.0.0.0:1514
+      labels:
+        job: "syslog"
+    relabel_configs:
+      - source_labels: ['__syslog_message_hostname']
+        target_label: 'host'
+      - source_labels: ['__syslog_message_severity']
+        target_label: 'level'
+      - source_labels: ['__syslog_message_facility']
+        target_label: 'facility'
+      - source_labels: ['__syslog_message_app_name']
+        target_label: 'application'
+EOF
+
+# Buat user dan permissions
+sudo useradd --system --no-create-home --shell /bin/false promtail
+sudo chown -R promtail:promtail /opt/promtail
+
+# Buat systemd service
+sudo tee /etc/systemd/system/promtail.service > /dev/null << 'EOF'
+[Unit]
+Description=Promtail Log Collector
+Wants=network-online.target
+After=network-online.target loki.service
+
+[Service]
+User=promtail
+Group=promtail
+Type=simple
+ExecStart=/opt/promtail/bin/promtail \
+    -config.file=/opt/promtail/conf/promtail.yml \
+    -log.level=info
+
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Start service
+sudo systemctl daemon-reload
+sudo systemctl enable promtail
+sudo systemctl start promtail
+sudo systemctl status promtail
+LANGKAH 7: Instalasi Flow Exporter (NetFlow/sFlow)
+bash
+# Install dependencies
+sudo apt install -y git build-essential libpcap-dev
+
+# Buat struktur folder
+sudo mkdir -p /opt/flow-exporter/{bin,conf,logs}
+
+# Clone dan build flow exporter
+cd /tmp
+git clone https://github.com/nerdalert/flow-exporter.git
+cd flow-exporter
+make
+
+# Copy binary
+sudo cp flow-exporter /opt/flow-exporter/bin/
+
+# Buat konfigurasi flow exporter
+sudo tee /opt/flow-exporter/conf/flow.yml > /dev/null << 'EOF'
+global:
+  port: 9593
+  log_level: info
+
+netflow:
+  enabled: true
+  port: 2055
+  workers: 2
+
+sflow:
+  enabled: true
+  port: 6343
+  workers: 2
+
+prometheus:
+  namespace: flow
+  enabled: true
+  metrics:
+    - bytes
+    - packets
+    - ipsrc
+    - ipdst
+    - srcport
+    - dstport
+    - proto
+EOF
+
+# Buat user dan permissions
+sudo useradd --system --no-create-home --shell /bin/false flow_exporter
+sudo chown -R flow_exporter:flow_exporter /opt/flow-exporter
+
+# Buat systemd service
+sudo tee /etc/systemd/system/flow-exporter.service > /dev/null << 'EOF'
+[Unit]
+Description=Flow Exporter (NetFlow/sFlow)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=flow_exporter
+Group=flow_exporter
+Type=simple
+ExecStart=/opt/flow-exporter/bin/flow-exporter \
+    -config=/opt/flow-exporter/conf/flow.yml
+
+Restart=always
+RestartSec=3
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Start service
+sudo systemctl daemon-reload
+sudo systemctl enable flow-exporter
+sudo systemctl start flow-exporter
+sudo systemctl status flow-exporter
+LANGKAH 8: Konfigurasi Firewall
+bash
+# Enable firewall jika belum
+sudo ufw --force enable
+
+# Buka port yang diperlukan
+sudo ufw allow 22/tcp          # SSH
+sudo ufw allow 9090/tcp        # Prometheus
+sudo ufw allow 3000/tcp        # Grafana
+sudo ufw allow 9100/tcp        # Node Exporter
+sudo ufw allow 9116/tcp        # SNMP Exporter
+sudo ufw allow 3100/tcp        # Loki
+sudo ufw allow 1514/udp        # Syslog
+sudo ufw allow 2055/udp        # NetFlow
+sudo ufw allow 6343/udp        # sFlow
+sudo ufw allow 9593/tcp        # Flow Exporter
+
+# Reload firewall
+sudo ufw reload
+sudo ufw status verbose
+LANGKAH 9: Verifikasi dan Testing
+bash
+# Cek semua service berjalan
+sudo systemctl status prometheus node_exporter snmp_exporter grafana-server loki promtail flow-exporter
+
+# Cek koneksi port
+echo "=== Cek Port Listening ==="
+sudo netstat -tlnp | grep -E '9090|3000|9100|9116|3100|9080|9593'
+
+# Test endpoints dengan curl
+echo -e "\n=== Test Endpoints ==="
+curl -s http://localhost:9090/metrics | head -5
+curl -s http://localhost:9100/metrics | head -5
+curl -s http://localhost:9116/metrics | head -5
+curl -s http://localhost:3100/ready | head -5
+curl -s http://localhost:3000/api/health | head -5
+
+# Cek logs
+echo -e "\n=== Cek Logs (5 baris terakhir) ==="
+sudo tail -5 /opt/prometheus/logs/*.log 2>/dev/null || echo "No prometheus logs yet"
+sudo tail -5 /opt/grafana/logs/*.log 2>/dev/null || echo "No grafana logs yet"
+LANGKAH 10: Konfigurasi Target Device
+10.1 Untuk SNMP Device:
+bash
+# Contoh konfigurasi untuk device Cisco (tambahkan di /opt/prometheus/conf/prometheus.yml)
+sudo tee -a /opt/prometheus/conf/prometheus.yml > /dev/null << 'EOF'
+
+  # Contoh target SNMP device
+  - job_name: "snmp_network_devices"
+    scrape_interval: 30s
+    static_configs:
+      - targets:
+        - 192.168.1.1  # Router Cisco
+        - 192.168.1.2  # Switch
+    metrics_path: /snmp
+    params:
+      module: [cisco]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: localhost:9116  # SNMP exporter
+EOF
+
+sudo systemctl restart prometheus
+10.2 Untuk Syslog Device:
+bash
+# Device perlu dikonfigurasi untuk mengirim syslog ke:
+# <IP_SERVER>:1514 dengan protocol UDP
+10.3 Untuk NetFlow/sFlow Device:
+bash
+# Device perlu dikonfigurasi untuk mengirim flow data ke:
+# NetFlow: <IP_SERVER>:2055
+# sFlow: <IP_SERVER>:6343
+LANGKAH 11: Akses Dashboard
+bash
+echo "=========================================="
+echo "INSTALASI SELESAI"
+echo "=========================================="
+echo "Akses dashboard di:"
+echo "1. Prometheus: http://$(hostname -I | awk '{print $1}'):9090"
+echo "2. Grafana:    http://$(hostname -I | awk '{print $1}'):3000"
+echo "   Username:   eadmin"
+echo "   Password:   prometheus"
+echo "3. Node Metrics: http://$(hostname -I | awk '{print $1}'):9100"
+echo "4. SNMP Exporter: http://$(hostname -I | awk '{print $1}'):9116"
+echo "5. Loki (Logs): http://$(hostname -I | awk '{print $1}'):3100"
+echo "=========================================="
+echo "Import dashboard di Grafana dengan ID:"
+echo "- Node Exporter: 1860"
+echo "- SNMP: 10567"
+echo "- Loki Logs: 13639"
+echo "=========================================="
+LANGKAH 12: Maintenance & Monitoring
+bash
+# Buat script monitoring service
+sudo tee /usr/local/bin/check-monitoring.sh > /dev/null << 'EOF'
+#!/bin/bash
+echo "=== Monitoring Stack Status ==="
+echo "Time: $(date)"
+echo ""
+
+services=("prometheus" "node_exporter" "snmp_exporter" "grafana-server" "loki" "promtail" "flow-exporter")
+
+for service in "${services[@]}"; do
+    status=$(systemctl is-active $service)
+    if [ "$status" = "active" ]; then
+        echo "✓ $service: RUNNING"
+    else
+        echo "✗ $service: NOT RUNNING"
+    fi
+done
+
+echo ""
+echo "=== Resource Usage ==="
+echo "Memory:"
+ps aux | grep -E '(prometheus|grafana|loki|node_exporter|snmp_exporter|flow-exporter)' | grep -v grep | awk '{print $4, $11}' | sort -rn | head -10
+
+echo ""
+echo "=== Disk Usage ==="
+du -sh /opt/{prometheus,grafana,loki}/* 2>/dev/null
+EOF
+
+sudo chmod +x /usr/local/bin/check-monitoring.sh
+
+# Buat crontab untuk auto-start jika mati
+sudo tee /etc/cron.d/monitoring-watchdog > /dev/null << 'EOF
+*/5 * * * * root for service in prometheus node_exporter snmp_exporter grafana-server loki promtail flow-exporter; do systemctl is-active --quiet $service || systemctl restart $service; done
+EOF
+Troubleshooting Tips:
+Service tidak start: sudo journalctl -u <service-name> -f
+
+Port tidak listening: sudo ss -tulpn | grep <port>
+
+Permission error: sudo chown -R <user>:<group> /opt/<service>
+
+Konfigurasi error: sudo /opt/prometheus/bin/promtool check config /opt/prometheus/conf/prometheus.yml
+
+Grafana login issue: Reset password dengan sudo grafana-cli admin reset-admin-password prometheus
+
+Catatan Penting:
+Semua service berjalan sebagai user terpisah untuk security
+
+Data disimpan di /opt/ masing-masing service
+
+Firewall sudah dikonfigurasi untuk port yang diperlukan
+
+Dashboard Grafana bisa diimport dengan ID yang disebutkan
+
+Untuk scale yang lebih besar, pertimbangkan menggunakan Docker atau Kubernetes
+
+Instalasi ini memberikan stack monitoring lengkap yang siap digunakan untuk monitoring network device melalui tiga protokol berbeda (SNMP, Logs, NetFlow) dengan interface terpusat di Grafana.
